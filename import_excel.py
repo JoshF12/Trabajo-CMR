@@ -1,131 +1,316 @@
+# import_excel.py
 import pandas as pd
-from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
-from models import Base, Cliente, Pedido, ItemPedido
 from datetime import datetime
 
-# Configurar conexión
-DB_URL = "mysql+pymysql://crm_user:TuPasswordFuerte123!@localhost:3306/crm_pyme?charset=utf8mb4"
-engine = create_engine(DB_URL)
+from db import SessionLocal
+from models import Cliente, Pedido, ItemPedido
 
-# 📄 Ruta del archivo Excel (ajustada a tu proyecto)
-excel_path = r"C:\Users\diego\OneDrive\Desktop\Ing. Software Proyecto\utem.proyecto sercotec.xlsx"
 
-# Leer el Excel
-xls = pd.ExcelFile(excel_path)
-sheet = xls.sheet_names[0]
-raw = xls.parse(sheet)
+def generar_codigo_pedido(fecha: datetime, correlativo: int) -> str:
+    """Genera un código de pedido interno si el Excel no trae uno."""
+    return "P" + fecha.strftime("%Y%m%d") + f"-{correlativo:03d}"
 
-# Limpieza básica (como el Excel tenía títulos en las primeras filas)
-header = raw.iloc[0].tolist()
-df = raw[3:].copy()
-df.columns = header + raw.columns[len(header):].tolist()[:len(raw.columns)-len(header)]
-df = df.loc[:, ~df.columns.duplicated()]
 
-# Renombrar columnas para que coincidan con el modelo
-COLS = {
-    'FECHA': 'fecha',
-    'CANAL DE VENTA': 'canal',
-    'PEDIDO': 'numero_pedido',
-    'CLIENTE': 'cliente_nombre',
-    'TELÉFONO': 'telefono',
-    'DIRECCIÓN': 'direccion',
-    'COMUNA': 'comuna',
-    'PRODUCTOS': 'producto',
-    'UNID': 'unidades',
-    'FORMA DE PAGO': 'forma_pago',
-    'BOLETA': 'tipo_doc',
-    'PAGO': 'pagado',
-    'SALDO': 'saldo',
-    'DESPACHO': 'despacho',
-    'CORREO': 'correo',
-    'ESTADO': 'estado',
-}
+def limpiar_nan(valor, es_telefono: bool = False) -> str:
+    """
+    Limpia celdas del Excel:
+    - Convierte NaN / None a "".
+    - Convierte números a string limpio.
+    - Para teléfonos:
+        * Elimina ".0"
+        * Corrige notación científica (9.5e+08 -> 950000000)
+        * Quita espacios, comas y guiones.
+    """
+    if valor is None:
+        return ""
 
-df = df.rename(columns={k: v for k, v in COLS.items() if k in df.columns})
-
-# Convertir tipos
-def parse_date(x):
-    if pd.isna(x):
-        return None
     try:
-        return pd.to_datetime(x, dayfirst=True, errors='coerce')
+        if pd.isna(valor):
+            return ""
     except Exception:
-        return None
+        pass
 
-df['fecha'] = df['fecha'].apply(parse_date)
+    txt = str(valor).strip()
 
-for money in ['pagado', 'saldo']:
-    if money in df.columns:
-        df[money] = (df[money]
-                     .astype(str)
-                     .str.replace('.', '', regex=False)
-                     .str.replace(',', '.', regex=False))
-        df[money] = pd.to_numeric(df[money], errors='coerce')
+    if txt.lower() == "nan":
+        return ""
 
-if 'unidades' in df.columns:
-    df['unidades'] = pd.to_numeric(df['unidades'], errors='coerce').astype('Int64')
+    if es_telefono:
+        # Si viene como float tipo "952288367.0"
+        if txt.endswith(".0"):
+            txt = txt[:-2]
 
-# Crear tablas si no existen
-Base.metadata.create_all(engine)
+        # Notación científica tipo "9.5243e+08"
+        if "e+" in txt.lower() or "e-" in txt.lower():
+            try:
+                txt = str(int(float(txt)))
+            except Exception:
+                pass
 
-# Insertar datos en la base
-with Session(engine) as session:
-    for _, row in df.iterrows():
-        nombre = str(row.get('cliente_nombre') or '').strip()
-        if not nombre:
-            continue
+        # Quitar espacios, comas, guiones
+        txt = txt.replace(" ", "").replace(",", "").replace("-", "")
 
-        telefono = str(row.get('telefono') or '') if not pd.isna(row.get('telefono')) else None
-        correo = str(row.get('correo') or '') if not pd.isna(row.get('correo')) else None
-        direccion = str(row.get('direccion') or '') if not pd.isna(row.get('direccion')) else None
-        comuna = str(row.get('comuna') or '') if not pd.isna(row.get('comuna')) else None
+    return txt
 
-        # Buscar cliente existente
-        cli = session.scalar(
-            select(Cliente).where(
-                (Cliente.nombre == nombre) &
-                (Cliente.telefono == telefono) &
-                (Cliente.correo == correo)
+
+def limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Limpia el DataFrame leído desde el Excel de Raíz Diseño.
+
+    - Elimina filas totalmente vacías.
+    - Rellena hacia abajo columnas de contexto del pedido (fecha, canal, número pedido...).
+    - NO rellena datos de contacto de un cliente con los de otro.
+    - Datos de contacto (teléfono, dirección, comuna, correo) se rellenan
+      solo dentro del mismo cliente.
+    """
+    # Eliminamos filas totalmente vacías
+    df = df.dropna(how="all").copy()
+
+    # Relleno "global" solo para columnas de contexto (no datos personales)
+    cols_ffill_global = [
+        "fecha", "canal_venta", "numero_pedido",
+        "forma_pago", "tipo_documento", "pago",
+        "saldo", "despacho", "estado"
+    ]
+    for col in cols_ffill_global:
+        if col in df.columns:
+            df[col] = df[col].ffill()
+
+    cleaned_rows = []
+    current_cliente = None
+    # Guardamos la última info de contacto conocida por cliente
+    contactos_por_cliente: dict[str, dict[str, str]] = {}
+
+    for _, original_row in df.iterrows():
+        row = original_row.copy()
+
+        # Nombre del cliente, ya limpio
+        cliente_str = limpiar_nan(row.get("cliente"))
+
+        # Si esta fila trae un cliente explícito
+        if cliente_str:
+            current_cliente = cliente_str
+
+            # Construimos / actualizamos info de contacto para este cliente
+            info = contactos_por_cliente.get(current_cliente, {})
+            for campo in ["telefono", "direccion", "comuna", "correo"]:
+                if campo in df.columns:
+                    if campo == "telefono":
+                        val = limpiar_nan(row.get(campo), es_telefono=True)
+                    else:
+                        val = limpiar_nan(row.get(campo))
+                    if val:
+                        info[campo] = val
+            contactos_por_cliente[current_cliente] = info
+
+        # Si no trae cliente explícito pero hay uno en curso -> misma "cabecera"
+        elif current_cliente:
+            row["cliente"] = current_cliente
+
+        # Rellenar datos de contacto SOLO con la info del mismo cliente
+        if current_cliente and current_cliente in contactos_por_cliente:
+            info = contactos_por_cliente[current_cliente]
+            for campo in ["telefono", "direccion", "comuna", "correo"]:
+                if campo in df.columns:
+                    if campo == "telefono":
+                        val = limpiar_nan(row.get(campo), es_telefono=True)
+                    else:
+                        val = limpiar_nan(row.get(campo))
+                    if not val and campo in info:
+                        row[campo] = info[campo]
+                    else:
+                        row[campo] = val
+        else:
+            # No hay cliente actual, igual limpiamos los campos de contacto
+            for campo in ["telefono", "direccion", "comuna", "correo"]:
+                if campo in df.columns:
+                    row[campo] = limpiar_nan(
+                        row.get(campo),
+                        es_telefono=(campo == "telefono")
+                    )
+
+        # Limpiamos también otras columnas de texto (para evitar "nan")
+        for campo_texto in [
+            "canal_venta", "numero_pedido", "forma_pago",
+            "tipo_documento", "despacho", "estado", "producto"
+        ]:
+            if campo_texto in df.columns:
+                row[campo_texto] = limpiar_nan(row.get(campo_texto))
+
+        cleaned_rows.append(row)
+
+    cleaned_df = pd.DataFrame(cleaned_rows)
+    return cleaned_df
+
+
+def importar_excel(ruta_excel: str):
+    """Importa un Excel con la estructura usada por Raíz Diseño.
+
+    Flujo:
+    1) Detectar fila de encabezados (donde la primera columna es 'FECHA').
+    2) Renombrar columnas a nombres internos.
+    3) Limpiar el DataFrame (rellenos controlados + NaN -> "").
+    4) Crear/actualizar clientes, pedidos, e ítems en SQLite.
+    """
+
+    # 1) Leemos sin encabezados para encontrar la fila donde está "FECHA"
+    df_raw = pd.read_excel(ruta_excel, header=None)
+
+    header_rows = df_raw.index[df_raw.iloc[:, 0] == "FECHA"].tolist()
+    if not header_rows:
+        raise ValueError("No se encontró una fila con 'FECHA' como encabezado.")
+    header_row = header_rows[0]
+
+    # 2) Volvemos a leer el Excel usando esa fila como encabezado real
+    df = pd.read_excel(ruta_excel, header=header_row)
+
+    # 3) Renombramos columnas a nombres internos
+    df = df.rename(columns={
+        "FECHA": "fecha",
+        "CANAL DE VENTA": "canal_venta",
+        "PEDIDO": "numero_pedido",
+        "CLIENTE": "cliente",
+        "TELÉFONO": "telefono",
+        "DIRECCIÓN": "direccion",
+        "COMUNA": "comuna",
+        "PRODUCTOS": "producto",
+        "UNID": "unidades",
+        "FORMA DE PAGO": "forma_pago",
+        "BOLETA": "tipo_documento",
+        "PAGO": "pago",
+        "SALDO": "saldo",
+        "DESPACHO": "despacho",
+        "CORREO": "correo",
+        "ESTADO": "estado",
+    })
+
+    # 4) Limpiamos el DataFrame (rellenos controlados y NaN -> "")
+    df = limpiar_dataframe(df)
+
+    # 5) Conexión a la base SQLite
+    session: Session = SessionLocal()
+
+    try:
+        correlativo_interno = 1
+
+        for _, row in df.iterrows():
+            # Filas inútiles: sin cliente y sin producto
+            cliente_nombre = limpiar_nan(row.get("cliente"))
+            producto_nombre = limpiar_nan(row.get("producto"))
+
+            if not cliente_nombre and not producto_nombre:
+                continue
+
+            # Si tampoco hay fecha, la descartamos
+            if pd.isna(row.get("fecha")):
+                continue
+
+            # ------------------- CLIENTE -------------------
+            if not cliente_nombre:
+                # Sin cliente no tiene sentido importar
+                continue
+
+            cliente = (
+                session.query(Cliente)
+                .filter(Cliente.nombre == cliente_nombre)
+                .first()
             )
-        )
 
-        # Crear nuevo cliente si no existe
-        if not cli:
-            cli = Cliente(
-                nombre=nombre,
-                telefono=telefono,
-                correo=correo,
-                direccion=direccion,
-                comuna=comuna
+            tel = limpiar_nan(row.get("telefono"), es_telefono=True)
+            cor = limpiar_nan(row.get("correo"))
+            dir_ = limpiar_nan(row.get("direccion"))
+            com = limpiar_nan(row.get("comuna"))
+
+            if not cliente:
+                cliente = Cliente(
+                    nombre=cliente_nombre,
+                    telefono=tel,
+                    correo=cor,
+                    direccion=dir_,
+                    comuna=com,
+                )
+                session.add(cliente)
+                session.flush()  # para obtener cliente.id
+            else:
+                # Actualizamos datos de contacto si vienen en esta fila
+                if tel:
+                    cliente.telefono = tel
+                if cor:
+                    cliente.correo = cor
+                if dir_:
+                    cliente.direccion = dir_
+                if com:
+                    cliente.comuna = com
+
+            # ------------------- PEDIDO -------------------
+            fecha_pedido = pd.to_datetime(row.get("fecha")).to_pydatetime()
+
+            numero_pedido = limpiar_nan(row.get("numero_pedido"))
+            if not numero_pedido:
+                continue
+
+            pedido = (
+                session.query(Pedido)
+                .filter(Pedido.numero_pedido == numero_pedido)
+                .first()
             )
-            session.add(cli)
-            session.flush()
+            if not pedido:
+                pedido = Pedido(
+                    numero_pedido=numero_pedido,
+                    fecha_pedido=fecha_pedido,
+                    canal_venta=limpiar_nan(row.get("canal_venta")),
+                    forma_pago=limpiar_nan(row.get("forma_pago")),
+                    tipo_documento=limpiar_nan(row.get("tipo_documento")),
+                    monto_pagado=row.get("pago") if not pd.isna(row.get("pago")) else 0,
+                    saldo=row.get("saldo") if not pd.isna(row.get("saldo")) else 0,
+                    despacho=limpiar_nan(row.get("despacho")),
+                    estado=limpiar_nan(row.get("estado")),
+                    cliente_id=cliente.id,
+                )
+                session.add(pedido)
+                session.flush()
+            else:
+                # Podríamos actualizar algunos campos si estuvieran vacíos
+                if not pedido.canal_venta:
+                    pedido.canal_venta = limpiar_nan(row.get("canal_venta"))
+                if not pedido.forma_pago:
+                    pedido.forma_pago = limpiar_nan(row.get("forma_pago"))
+                if not pedido.tipo_documento:
+                    pedido.tipo_documento = limpiar_nan(row.get("tipo_documento"))
 
-        # Crear pedido
-        pedido = Pedido(
-            cliente_id=cli.id,
-            numero_pedido=str(row.get('numero_pedido')) if not pd.isna(row.get('numero_pedido')) else None,
-            fecha=pd.Timestamp.to_pydatetime(row['fecha']) if pd.notna(row['fecha']) else None,
-            canal=str(row.get('canal')) if not pd.isna(row.get('canal')) else None,
-            forma_pago=str(row.get('forma_pago')) if not pd.isna(row.get('forma_pago')) else None,
-            tipo_doc=str(row.get('tipo_doc')) if not pd.isna(row.get('tipo_doc')) else None,
-            pagado=float(row.get('pagado')) if pd.notna(row.get('pagado')) else None,
-            saldo=float(row.get('saldo')) if pd.notna(row.get('saldo')) else None,
-            despacho=str(row.get('despacho')) if not pd.isna(row.get('despacho')) else None,
-            estado=str(row.get('estado')) if not pd.isna(row.get('estado')) else None
-        )
-        session.add(pedido)
-        session.flush()
+            # ------------------- ITEM PEDIDO -------------------
+            if not producto_nombre:
+                # fila sin producto → no creamos ítem
+                continue
 
-        # Crear item asociado
-        item = ItemPedido(
-            pedido_id=pedido.id,
-            producto=str(row.get('producto')) if not pd.isna(row.get('producto')) else None,
-            unidades=int(row.get('unidades')) if pd.notna(row.get('unidades')) else None
-        )
-        session.add(item)
+            try:
+                unidades = int(row.get("unidades") or 0)
+            except Exception:
+                unidades = 0
+            if unidades <= 0:
+                unidades = 1
 
-    session.commit()
+            item = ItemPedido(
+                producto=producto_nombre,
+                cantidad=unidades,
+                precio_unitario=None,
+                total_item=None,
+                pedido_id=pedido.id,
+            )
+            session.add(item)
 
-print("✅ Importación completa: clientes, pedidos e items cargados en MySQL.")
+        session.commit()
+        print("Importación completa.")
+
+    except Exception as exc:
+        session.rollback()
+        print("Error al importar Excel:", exc)
+        raise
+    finally:
+        session.close()
+
+
+if __name__ == "__main__":
+    ruta = input("Ruta del Excel a importar: ").strip().strip('"')
+    importar_excel(ruta)
