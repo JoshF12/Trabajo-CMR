@@ -14,7 +14,7 @@ from models import Cliente, Pedido, ItemPedido
 
 
 # ===================================================
-# ========== UTILIDADES COMUNAS Y VALIDADORES ========
+# ========== UTILIDADES COMUNAS Y VALIDADORES =======
 # ===================================================
 
 COMUNAS_SANTIAGO = [
@@ -52,7 +52,6 @@ COMUNAS_SANTIAGO = [
     "Vitacura",
 ]
 
-
 ESTADOS_PEDIDO = [
     "Pendiente",
     "Preparación",
@@ -64,14 +63,12 @@ ESTADOS_PEDIDO = [
 
 
 def crear_validador_telefono(parent=None):
-    """
-    Solo permite dígitos 0-9 (vacío también es válido).
-    """
+    """Solo permite dígitos 0-9 (vacío también es válido)."""
     regex = QRegularExpression(r"^[0-9]*$")
     return QRegularExpressionValidator(regex, parent)
 
 
-def configurar_combo_comuna(combo, valor_actual=None):
+def configurar_combo_comuna(combo: QComboBox, valor_actual: str | None = None) -> None:
     """
     Deja el combo editable con una lista base de comunas de Santiago
     pero permitiendo escribir otras (para regiones).
@@ -90,14 +87,12 @@ def configurar_combo_comuna(combo, valor_actual=None):
 # ========== GENERACIÓN NÚMERO DE PEDIDO ============
 # ===================================================
 
-def _generar_codigo_pedido(fecha, correlativo):
-    """
-    Genera un código del tipo PYYYYMMDD-XXX.
-    """
+def _generar_codigo_pedido(fecha: datetime, correlativo: int) -> str:
+    """Genera un código del tipo PYYYYMMDD-XXX."""
     return "P" + fecha.strftime("%Y%m%d") + f"-{correlativo:03d}"
 
 
-def generar_numero_pedido_db(session, fecha=None):
+def generar_numero_pedido_db(session, fecha: datetime | None = None) -> str:
     """
     Genera un número de pedido único consultando la BD.
     Busca el último número del día y suma 1.
@@ -133,7 +128,7 @@ def generar_numero_pedido_db(session, fecha=None):
 class ItemsPedidoDialog(QDialog):
     """Muestra y permite editar los ítems de un pedido."""
 
-    def __init__(self, pedido_id, parent=None):
+    def __init__(self, pedido_id: int, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Ítems del pedido")
         self.resize(600, 300)
@@ -166,18 +161,23 @@ class ItemsPedidoDialog(QDialog):
 
         self.load_items()
 
-    def load_items(self):
+    def load_items(self) -> None:
+        """Carga los ítems actuales del pedido desde la BD."""
         session = SessionLocal()
         try:
-            items = session.query(ItemPedido).filter_by(pedido_id=self._pedido_id).all()
+            items = (
+                session.query(ItemPedido)
+                .filter_by(pedido_id=self._pedido_id)
+                .all()
+            )
 
-            rows = []
+            rows: list[dict] = []
             for it in items:
                 rows.append({
                     "id": it.id,
                     "producto": it.producto or "",
                     "cantidad": it.cantidad or 0,
-                    "precio": it.precio_unitario or 0
+                    "precio": it.precio_unitario or 0,
                 })
         finally:
             session.close()
@@ -192,67 +192,91 @@ class ItemsPedidoDialog(QDialog):
 
         self.table.resizeColumnsToContents()
 
-    def add_item_row(self):
+    def add_item_row(self) -> None:
+        """Agrega una fila vacía para un nuevo ítem."""
         r = self.table.rowCount()
         self.table.insertRow(r)
-        self.table.setItem(r, 0, QTableWidgetItem(""))  # ID vacío (nuevo)
-        self.table.setItem(r, 1, QTableWidgetItem(""))
-        self.table.setItem(r, 2, QTableWidgetItem("1"))
-        self.table.setItem(r, 3, QTableWidgetItem("0"))
+        self.table.setItem(r, 0, QTableWidgetItem(""))      # ID vacío (nuevo)
+        self.table.setItem(r, 1, QTableWidgetItem(""))      # Producto
+        self.table.setItem(r, 2, QTableWidgetItem("1"))     # Cantidad por defecto
+        self.table.setItem(r, 3, QTableWidgetItem("0"))     # Precio por defecto
 
-    def delete_item_row(self):
+    def delete_item_row(self) -> None:
+        """Elimina la fila seleccionada en la tabla."""
         row = self.table.currentRow()
         if row >= 0:
             self.table.removeRow(row)
 
-    def save_items(self):
+    def save_items(self) -> None:
+        """
+        Guarda los ítems de la tabla en la base de datos.
+
+        - Crea ítems nuevos para filas sin ID.
+        - Actualiza ítems existentes.
+        - Elimina ítems que estaban en la BD pero ya no están en la tabla.
+        """
         session = SessionLocal()
 
         try:
-            existentes = {
+            # Ítems que ya existen en la BD para este pedido
+            existentes: dict[int, ItemPedido] = {
                 it.id: it
                 for it in session.query(ItemPedido)
-                .filter_by(pedido_id=self._pedido_id).all()
+                .filter_by(pedido_id=self._pedido_id)
+                .all()
             }
 
+            # Recorrer las filas de la tabla y actualizar / crear ítems
             for r in range(self.table.rowCount()):
                 id_item = self.table.item(r, 0)
                 prod_item = self.table.item(r, 1)
                 cant_item = self.table.item(r, 2)
                 prec_item = self.table.item(r, 3)
 
+                # Si no hay celda de producto, ignoramos la fila
                 if not prod_item:
                     continue
 
                 producto = prod_item.text().strip()
                 if not producto:
+                    # Fila vacía de producto -> no se guarda
                     continue
 
+                # Cantidad
                 try:
-                    cantidad = int(cant_item.text()) if cant_item else 0
+                    cantidad = int(cant_item.text()) if cant_item and cant_item.text().strip() else 0
                 except Exception:
                     cantidad = 0
 
+                if cantidad <= 0:
+                    cantidad = 1
+
+                # Precio
                 try:
-                    precio = float(prec_item.text()) if prec_item else 0.0
+                    precio = float(prec_item.text()) if prec_item and prec_item.text().strip() else 0.0
                 except Exception:
                     precio = 0.0
 
-                if id_item and id_item.text().strip():
-                    iid = int(id_item.text())
-                    it = existentes.pop(iid, None)
-                    if it:
-                        it.producto = producto
-                        it.cantidad = cantidad
-                        it.precio_unitario = precio
-                        it.total_item = cantidad * precio
+                # ¿Es un ítem ya existente o uno nuevo?
+                iid: int | None = None
+                if id_item and id_item.text().strip().isdigit():
+                    iid = int(id_item.text().strip())
+
+                if iid is not None and iid in existentes:
+                    # Actualizar ítem existente
+                    it = existentes.pop(iid)
+                    it.producto = producto
+                    it.cantidad = cantidad
+                    it.precio_unitario = precio
+                    it.total_item = cantidad * precio
                 else:
+                    # Crear ítem nuevo
                     it = ItemPedido(
                         producto=producto,
                         cantidad=cantidad,
                         precio_unitario=precio,
                         total_item=cantidad * precio,
-                        pedido_id=self._pedido_id
+                        pedido_id=self._pedido_id,
                     )
                     session.add(it)
 
@@ -278,7 +302,7 @@ class ItemsPedidoDialog(QDialog):
 class PedidoFormDialog(QDialog):
     """Formulario para crear o editar un pedido."""
 
-    def __init__(self, pedido=None, parent=None):
+    def __init__(self, pedido: Pedido | None = None, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Pedido")
         self.resize(450, 260)
@@ -289,7 +313,7 @@ class PedidoFormDialog(QDialog):
 
         # Combo de clientes + botón "Nuevo cliente"
         self.cb_cliente = QComboBox()
-        self._clientes_ids = []
+        self._clientes_ids: list[int] = []
         self.btn_nuevo_cliente = QPushButton("Nuevo cliente")
         self.cargar_clientes()
 
@@ -311,10 +335,12 @@ class PedidoFormDialog(QDialog):
 
         # Despacho: solo 2 opciones
         self.cb_despacho = QComboBox()
-        self.cb_despacho.addItems([
-            "Retiro en tienda",
-            "Despacho al domicilio",
-        ])
+        self.cb_despacho.addItems(
+            [
+                "Retiro en tienda",
+                "Despacho al domicilio",
+            ]
+        )
 
         # Estado como combo con opciones fijas
         self.cb_estado = QComboBox()
@@ -365,7 +391,10 @@ class PedidoFormDialog(QDialog):
             self.ed_numero.setText(numero)
             self.ed_numero.setReadOnly(True)
 
-    def cargar_clientes(self):
+    # ------------------- CLIENTES -------------------
+
+    def cargar_clientes(self) -> None:
+        """Carga los clientes en el combo, guardando IDs en un arreglo paralelo."""
         session = SessionLocal()
         try:
             clientes = session.query(Cliente).order_by(Cliente.nombre).all()
@@ -374,24 +403,16 @@ class PedidoFormDialog(QDialog):
             for c in clientes:
                 nombre = c.nombre or ""
                 telefono = c.telefono or ""
-                correo = c.correo or ""
-                extra = []
-                if telefono:
-                    extra.append(telefono)
-                if correo:
-                    extra.append(correo)
-                if extra and nombre:
-                    display = f"{nombre} ({' | '.join(extra)})"
-                elif extra:
-                    display = " | ".join(extra)
+                if telefono and nombre:
+                    display = f"{nombre} ({telefono})"
                 else:
-                    display = nombre
+                    display = nombre or telefono
                 self.cb_cliente.addItem(display)
                 self._clientes_ids.append(c.id)
         finally:
             session.close()
 
-    def crear_nuevo_cliente(self):
+    def crear_nuevo_cliente(self) -> None:
         """
         Crear un cliente desde el formulario de pedido,
         preguntando todos los datos (pueden quedar en blanco excepto el nombre).
@@ -472,19 +493,26 @@ class PedidoFormDialog(QDialog):
             idx = self._clientes_ids.index(nuevo_id)
             self.cb_cliente.setCurrentIndex(idx)
 
-    def cargar_pedido(self):
+    # -------------------- PEDIDO --------------------
+
+    def cargar_pedido(self) -> None:
+        """Carga datos del pedido en el formulario (modo edición)."""
         p = self._pedido
 
+        # Cliente
         if p.cliente_id in self._clientes_ids:
             idx = self._clientes_ids.index(p.cliente_id)
             self.cb_cliente.setCurrentIndex(idx)
 
-        self.dt_fecha.setDate(QDate(
-            p.fecha_pedido.year,
-            p.fecha_pedido.month,
-            p.fecha_pedido.day
-        ))
+        # Fecha
+        if p.fecha_pedido:
+            self.dt_fecha.setDate(QDate(
+                p.fecha_pedido.year,
+                p.fecha_pedido.month,
+                p.fecha_pedido.day,
+            ))
 
+        # Datos básicos
         self.ed_numero.setText(p.numero_pedido or "")
         self.ed_canal.setText(p.canal_venta or "")
         self.ed_forma_pago.setText(p.forma_pago or "")
@@ -494,7 +522,9 @@ class PedidoFormDialog(QDialog):
 
         # Despacho: si en BD hay algo distinto, se agrega a la lista
         despacho_actual = p.despacho or ""
-        if despacho_actual and despacho_actual not in [self.cb_despacho.itemText(i) for i in range(self.cb_despacho.count())]:
+        if despacho_actual and despacho_actual not in [
+            self.cb_despacho.itemText(i) for i in range(self.cb_despacho.count())
+        ]:
             self.cb_despacho.addItem(despacho_actual)
         if despacho_actual:
             self.cb_despacho.setCurrentText(despacho_actual)
@@ -506,7 +536,8 @@ class PedidoFormDialog(QDialog):
         if estado_actual:
             self.cb_estado.setCurrentText(estado_actual)
 
-    def obtener_datos(self):
+    def obtener_datos(self) -> dict:
+        """Devuelve un diccionario con los datos del formulario."""
         idx = self.cb_cliente.currentIndex()
         cliente_id = self._clientes_ids[idx] if idx >= 0 else None
 
@@ -544,7 +575,7 @@ class PedidoFormDialog(QDialog):
 class PedidosDialog(QDialog):
     """Listado y gestión de pedidos."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Pedidos - Raíz Diseño")
         self.resize(950, 500)
@@ -643,13 +674,13 @@ class PedidosDialog(QDialog):
         self.cb_buscar_por.currentTextChanged.connect(self._cambio_modo_busqueda)
         self.cb_buscar_estado.currentIndexChanged.connect(self.aplicar_busqueda)
 
-        self._datos_pedidos = []
+        self._datos_pedidos: list[dict] = []
         self.cargar()
 
     # ===============================================================
     # CAMBIO DE MODO DE BÚSQUEDA
     # ===============================================================
-    def _cambio_modo_busqueda(self, modo):
+    def _cambio_modo_busqueda(self, modo: str) -> None:
         if modo == "Estado":
             self.ed_buscar.setVisible(False)
             self.cb_buscar_estado.setVisible(True)
@@ -677,14 +708,14 @@ class PedidosDialog(QDialog):
     # ===============================================================
     # LLENAR TABLA
     # ===============================================================
-    def _llenar_tabla(self, datos):
+    def _llenar_tabla(self, datos: list[dict]) -> None:
         self.table.setRowCount(len(datos))
         for i, d in enumerate(datos):
             self.table.setItem(i, 0, QTableWidgetItem(str(d["id"])))
             self.table.setItem(i, 1, QTableWidgetItem(d["numero"]))
             self.table.setItem(i, 2, QTableWidgetItem(d["fecha"]))
-            self.table.setItem(i, 3, QTableWidgetItem(d["cliente"]))     # nombre
-            self.table.setItem(i, 4, QTableWidgetItem(d["telefono"]))    # teléfono
+            self.table.setItem(i, 3, QTableWidgetItem(d["cliente"]))
+            self.table.setItem(i, 4, QTableWidgetItem(d["telefono"]))
             self.table.setItem(i, 5, QTableWidgetItem(str(d["monto"])))
             self.table.setItem(i, 6, QTableWidgetItem(str(d["saldo"])))
             self.table.setItem(i, 7, QTableWidgetItem(d["estado"]))
@@ -692,9 +723,10 @@ class PedidosDialog(QDialog):
         self.table.resizeColumnsToContents()
 
     # ===============================================================
-    # CARGAR PEDIDOS (AQUÍ SE AGREGA LA COLUMNA TELÉFONO)
+    # CARGAR PEDIDOS (CON TELÉFONO DEL CLIENTE)
     # ===============================================================
-    def cargar(self):
+    def cargar(self) -> None:
+        """Carga los pedidos desde la BD y rellena la tabla."""
         session = SessionLocal()
         try:
             pedidos = (
@@ -707,7 +739,6 @@ class PedidosDialog(QDialog):
             self._datos_pedidos = []
 
             for p in pedidos:
-
                 if p.cliente:
                     nombre = p.cliente.nombre or ""
                     telefono = p.cliente.telefono or ""
@@ -735,7 +766,7 @@ class PedidosDialog(QDialog):
     # ===============================================================
     # BÚSQUEDA
     # ===============================================================
-    def aplicar_busqueda(self):
+    def aplicar_busqueda(self) -> None:
         modo = self.cb_buscar_por.currentText()
         texto = self.ed_buscar.text().lower()
 
@@ -746,7 +777,9 @@ class PedidosDialog(QDialog):
                 self._llenar_tabla(self._datos_pedidos)
                 return
 
-            filtrados = [d for d in self._datos_pedidos if d["estado"].lower() == estado]
+            filtrados = [
+                d for d in self._datos_pedidos if d["estado"].lower() == estado
+            ]
             self._llenar_tabla(filtrados)
             return
 
@@ -761,7 +794,7 @@ class PedidosDialog(QDialog):
             desde = datetime(desde_q.year(), desde_q.month(), desde_q.day()).date()
             hasta = datetime(hasta_q.year(), hasta_q.month(), hasta_q.day()).date()
 
-            filtrados = []
+            filtrados: list[dict] = []
             for d in self._datos_pedidos:
                 if not d["fecha"]:
                     continue
@@ -776,13 +809,16 @@ class PedidosDialog(QDialog):
         if modo == "Cliente":
             filtrados = [
                 d for d in self._datos_pedidos
-                if texto in d["cliente"].lower() or texto in d["telefono"].lower()
+                if texto in d["cliente"].lower()
+                or texto in d["telefono"].lower()
             ]
             self._llenar_tabla(filtrados)
             return
 
         if modo == "N° Pedido":
-            filtrados = [d for d in self._datos_pedidos if texto in d["numero"].lower()]
+            filtrados = [
+                d for d in self._datos_pedidos if texto in d["numero"].lower()
+            ]
             self._llenar_tabla(filtrados)
             return
 
@@ -790,9 +826,9 @@ class PedidosDialog(QDialog):
         self._llenar_tabla(self._datos_pedidos)
 
     # ===============================================================
-    # LIMPIAR BUSQUEDA
+    # LIMPIAR BÚSQUEDA
     # ===============================================================
-    def limpiar_busqueda(self):
+    def limpiar_busqueda(self) -> None:
         self.ed_buscar.clear()
         self.cb_buscar_por.setCurrentIndex(0)
         self.cb_buscar_estado.setCurrentIndex(0)
@@ -803,7 +839,7 @@ class PedidosDialog(QDialog):
     # ===============================================================
     # UTILIDAD
     # ===============================================================
-    def _id_seleccionado(self):
+    def _id_seleccionado(self) -> int | None:
         r = self.table.currentRow()
         if r < 0:
             return None
@@ -812,7 +848,12 @@ class PedidosDialog(QDialog):
     # ===============================================================
     # CRUD DE PEDIDOS
     # ===============================================================
-    def nuevo(self):
+    def nuevo(self) -> None:
+        """
+        Crea un nuevo pedido.
+        Después de crearlo, abre automáticamente la ventana de ítems
+        para que el usuario pueda agregar productos al pedido.
+        """
         dlg = PedidoFormDialog(parent=self)
         if dlg.exec() == QDialog.Accepted:
             datos = dlg.obtener_datos()
@@ -822,6 +863,7 @@ class PedidosDialog(QDialog):
                 return
 
             session = SessionLocal()
+            nuevo_id: int | None = None
             try:
                 p = Pedido(
                     cliente_id=datos["cliente_id"],
@@ -837,20 +879,35 @@ class PedidosDialog(QDialog):
                 )
                 session.add(p)
                 session.commit()
+                nuevo_id = p.id
+            except Exception as exc:
+                session.rollback()
+                QMessageBox.critical(
+                    self, "Error", f"No se pudo crear el pedido:\n{exc}"
+                )
+                return
             finally:
                 session.close()
 
+            # Si el pedido se creó bien, abrimos inmediatamente la ventana de ítems
+            if nuevo_id is not None:
+                dlg_items = ItemsPedidoDialog(nuevo_id, self)
+                dlg_items.exec()
+
+            # Finalmente refrescamos la tabla de pedidos
             self.cargar()
 
-    def editar(self):
+    def editar(self) -> None:
         pid = self._id_seleccionado()
         if not pid:
             QMessageBox.warning(self, "Editar", "Selecciona un pedido.")
             return
 
         session = SessionLocal()
-        pedido = session.query(Pedido).get(pid)
-        session.close()
+        try:
+            pedido = session.query(Pedido).get(pid)
+        finally:
+            session.close()
 
         if not pedido:
             return
@@ -862,13 +919,15 @@ class PedidosDialog(QDialog):
             session = SessionLocal()
             try:
                 pedido = session.query(Pedido).get(pid)
+                if not pedido:
+                    return
                 pedido.cliente_id = datos["cliente_id"]
                 pedido.fecha_pedido = datos["fecha"]
                 pedido.canal_venta = datos["canal"]
                 pedido.forma_pago = datos["forma_pago"]
                 pedido.tipo_documento = datos["tipo_doc"]
                 pedido.monto_pagado = datos["monto"]
-                pedido.saldo =datos["saldo"]
+                pedido.saldo = datos["saldo"]
                 pedido.despacho = datos["despacho"]
                 pedido.estado = datos["estado"]
                 session.commit()
@@ -877,26 +936,29 @@ class PedidosDialog(QDialog):
 
             self.cargar()
 
-    def eliminar(self):
+    def eliminar(self) -> None:
         pid = self._id_seleccionado()
         if not pid:
             QMessageBox.warning(self, "Eliminar", "Selecciona un pedido.")
             return
 
-        if QMessageBox.question(self, "Eliminar", "¿Eliminar este pedido?") != QMessageBox.Yes:
+        if QMessageBox.question(
+            self, "Eliminar", "¿Eliminar este pedido?"
+        ) != QMessageBox.Yes:
             return
 
         session = SessionLocal()
         try:
             pedido = session.query(Pedido).get(pid)
-            session.delete(pedido)
-            session.commit()
+            if pedido:
+                session.delete(pedido)
+                session.commit()
         finally:
             session.close()
 
         self.cargar()
 
-    def ver_items(self):
+    def ver_items(self) -> None:
         pid = self._id_seleccionado()
         if not pid:
             QMessageBox.warning(self, "Ítems", "Selecciona un pedido.")
@@ -906,8 +968,6 @@ class PedidosDialog(QDialog):
         dlg.exec()
 
 
-
-
 # ===================================================
 # =========== HISTORIAL DE COMPRAS CLIENTE ==========
 # ===================================================
@@ -915,7 +975,7 @@ class PedidosDialog(QDialog):
 class HistorialClienteDialog(QDialog):
     """Historial de compras de un cliente específico."""
 
-    def __init__(self, cliente_id, parent=None):
+    def __init__(self, cliente_id: int, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Historial de compras")
         self.resize(750, 350)
@@ -945,7 +1005,8 @@ class HistorialClienteDialog(QDialog):
 
         self.cargar()
 
-    def cargar(self):
+    def cargar(self) -> None:
+        """Carga el historial de pedidos de un cliente."""
         session = SessionLocal()
         try:
             pedidos = (
@@ -955,16 +1016,20 @@ class HistorialClienteDialog(QDialog):
                 .all()
             )
 
-            datos = []
+            datos: list[dict] = []
             for p in pedidos:
-                datos.append({
-                    "id": p.id,
-                    "numero": p.numero_pedido or "",
-                    "fecha": p.fecha_pedido.strftime("%Y-%m-%d") if p.fecha_pedido else "",
-                    "monto": p.monto_pagado or 0,
-                    "saldo": p.saldo or 0,
-                    "estado": p.estado or "",
-                })
+                datos.append(
+                    {
+                        "id": p.id,
+                        "numero": p.numero_pedido or "",
+                        "fecha": p.fecha_pedido.strftime("%Y-%m-%d")
+                        if p.fecha_pedido
+                        else "",
+                        "monto": p.monto_pagado or 0,
+                        "saldo": p.saldo or 0,
+                        "estado": p.estado or "",
+                    }
+                )
         finally:
             session.close()
 
@@ -980,13 +1045,13 @@ class HistorialClienteDialog(QDialog):
 
         self.table.resizeColumnsToContents()
 
-    def _id_pedido_seleccionado(self):
+    def _id_pedido_seleccionado(self) -> int | None:
         r = self.table.currentRow()
         if r < 0:
             return None
         return int(self.table.item(r, 0).text())
 
-    def ver_items(self):
+    def ver_items(self) -> None:
         pid = self._id_pedido_seleccionado()
         if not pid:
             QMessageBox.information(self, "Ítems", "Selecciona un pedido.")
