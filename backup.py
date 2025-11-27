@@ -1,83 +1,64 @@
 # backup.py
-import os, subprocess
-from datetime import datetime
-from pathlib import Path
-from dotenv import load_dotenv
+import os
+import shutil
 
-load_dotenv()
+from config import get_backup_folder
+from db import DB_PATH
 
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "3306")
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASS = os.getenv("DB_PASS")
-BACKUP_DIR = os.getenv("BACKUP_DIR", r"C:\Users\Public\BackupsCRM")
-MYSQLDUMP = os.getenv("MYSQLDUMP", r"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysqldump.exe")
 
-def _ensure_dir(path: str):
-    Path(path).mkdir(parents=True, exist_ok=True)
-
-def _filename(db: str) -> str:
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    return f"{db}_backup_{ts}.sql"
-
-def create_backup() -> str:
+def hacer_respaldo():
     """
-    Genera un dump .sql de DB_NAME en BACKUP_DIR y retorna la ruta creada.
-    Lanza RuntimeError con mensaje claro si algo falla.
+    Crea (o reemplaza) un único archivo de respaldo de la base de datos SQLite
+    en la carpeta de respaldo configurada.
     """
-    if not DB_NAME or not DB_USER:
-        raise RuntimeError("Configura DB_NAME/DB_USER en el archivo .env.")
+    backup_folder = get_backup_folder()
+    if not backup_folder:
+        raise RuntimeError("No hay carpeta de respaldo configurada.")
 
-    _ensure_dir(BACKUP_DIR)
-    outfile = os.path.join(BACKUP_DIR, _filename(DB_NAME))
+    if not os.path.exists(DB_PATH):
+        raise RuntimeError(
+            f"No se encontró la base de datos en {DB_PATH}.\n"
+            "Ejecuta primero el sistema para crearla."
+        )
 
-    cmd = [
-        MYSQLDUMP,
-        f"--host={DB_HOST}",
-        f"--port={DB_PORT}",
-        f"--user={DB_USER}",
-        f"--password={DB_PASS}",
-        "--routines", "--events",
-        "--single-transaction", "--quick",
-        "--databases", DB_NAME
-    ]
+    os.makedirs(backup_folder, exist_ok=True)
 
-    try:
-        with open(outfile, "wb") as f:
-            proc = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, shell=False)
-    except FileNotFoundError:
-        raise RuntimeError("No se encontró mysqldump. Revisa MYSQLDUMP en .env o agrega MySQL\\bin al PATH.")
+    # Siempre el mismo nombre: se sobrescribe el archivo anterior
+    destino = os.path.join(backup_folder, "backup_raiz_diseno.db")
+    shutil.copy2(DB_PATH, destino)
+    print("Respaldo generado en:", destino)
 
-    if proc.returncode != 0:
-        # Limpia archivo vacío si falló
-        try:
-            if os.path.exists(outfile) and os.path.getsize(outfile) == 0:
-                os.remove(outfile)
-        except Exception:
-            pass
-        raise RuntimeError(f"mysqldump falló: {proc.stderr.decode(errors='ignore')}")
 
-    if os.path.getsize(outfile) < 1024:
-        raise RuntimeError(f"Respaldo sospechosamente pequeño: {outfile}")
-
-    return outfile
-
-def backup_once_per_day(flag_dir: str = None) -> str | None:
+def restaurar_si_no_existe():
     """
-    Evita repetir respaldo el mismo día. Usa %APPDATA%/crm_pyme/backup_flags
-    Retorna la ruta del backup si lo creó, o None si ya existía flag hoy.
+    Si la base de datos principal no existe pero sí existe el archivo
+    backup_raiz_diseno.db en la carpeta de respaldo, lo copia como DB actual.
+
+    Esto permite que, en un PC nuevo, con solo tener el backup en OneDrive
+    y abrir la app, se restaure automáticamente la información.
     """
-    if flag_dir is None:
-        flag_dir = os.path.join(os.getenv("APPDATA", str(Path.home())), "crm_pyme", "backup_flags")
-    _ensure_dir(flag_dir)
+    backup_folder = get_backup_folder()
+    if not backup_folder:
+        # No hay carpeta configurada: no hacemos nada
+        return
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    flag = os.path.join(flag_dir, f"{today}.flag")
+    # Si ya existe la BD, no tocamos nada
+    if os.path.exists(DB_PATH):
+        return
 
-    if os.path.exists(flag):
-        return None
+    ruta_backup = os.path.join(backup_folder, "backup_raiz_diseno.db")
+    if not os.path.exists(ruta_backup):
+        # No hay backup para restaurar
+        return
 
-    ruta = create_backup()
-    Path(flag).write_text("ok", encoding="utf-8")
-    return ruta
+    # Asegurar carpeta donde va la DB
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir, exist_ok=True)
+
+    shutil.copy2(ruta_backup, DB_PATH)
+    print("Base de datos restaurada automáticamente desde:", ruta_backup)
+
+
+if __name__ == "__main__":
+    hacer_respaldo()
