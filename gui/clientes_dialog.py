@@ -14,6 +14,8 @@ from .pedidos_dialog import (
     COMUNAS_SANTIAGO,
     crear_validador_telefono,
     configurar_combo_comuna,
+    crear_lineedit_rut,
+    formatear_rut,
 )
 
 
@@ -30,7 +32,12 @@ class EditClienteDialog(QDialog):
         form = QFormLayout()
 
         self.ed_nombre = QLineEdit(cliente.nombre or "")
+        self.ed_rut = crear_lineedit_rut(self)
+        # Si ya hay un RUT guardado, lo mostramos formateado
+        if getattr(cliente, "rut", None):
+            self.ed_rut.setText(formatear_rut(cliente.rut))
         self.ed_telefono = QLineEdit(cliente.telefono or "")
+
         self.ed_telefono.setValidator(crear_validador_telefono(self))
         self.ed_correo = QLineEdit(cliente.correo or "")
         self.ed_direccion = QLineEdit(cliente.direccion or "")
@@ -39,6 +46,7 @@ class EditClienteDialog(QDialog):
         configurar_combo_comuna(self.cb_comuna, cliente.comuna or None)
 
         form.addRow("Nombre:", self.ed_nombre)
+        form.addRow("RUT:", self.ed_rut)
         form.addRow("Teléfono:", self.ed_telefono)
         form.addRow("Correo:", self.ed_correo)
         form.addRow("Dirección:", self.ed_direccion)
@@ -64,6 +72,7 @@ class EditClienteDialog(QDialog):
             return
 
         self._cliente.nombre = nombre
+        self._cliente.rut = self.ed_rut.text().strip() or None
         self._cliente.telefono = self.ed_telefono.text().strip() or None
         self._cliente.correo = self.ed_correo.text().strip() or None
         self._cliente.direccion = self.ed_direccion.text().strip() or None
@@ -98,9 +107,9 @@ class ClientesDialog(QDialog):
 
         # ---- Tabla ----
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(
-            ["ID", "Nombre", "Teléfono", "Correo", "Dirección", "Comuna"]
+            ["ID", "Nombre", "RUT", "Teléfono", "Correo", "Dirección", "Comuna"]
         )
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -145,10 +154,11 @@ class ClientesDialog(QDialog):
         for row, d in enumerate(datos):
             self.table.setItem(row, 0, QTableWidgetItem(str(d["id"])))
             self.table.setItem(row, 1, QTableWidgetItem(d["nombre"] or ""))
-            self.table.setItem(row, 2, QTableWidgetItem(d["telefono"] or ""))
-            self.table.setItem(row, 3, QTableWidgetItem(d["correo"] or ""))
-            self.table.setItem(row, 4, QTableWidgetItem(d["direccion"] or ""))
-            self.table.setItem(row, 5, QTableWidgetItem(d["comuna"] or ""))
+            self.table.setItem(row, 2, QTableWidgetItem(d.get("rut", "") or ""))
+            self.table.setItem(row, 3, QTableWidgetItem(d["telefono"] or ""))
+            self.table.setItem(row, 4, QTableWidgetItem(d["correo"] or ""))
+            self.table.setItem(row, 5, QTableWidgetItem(d["direccion"] or ""))
+            self.table.setItem(row, 6, QTableWidgetItem(d["comuna"] or ""))
         self.table.resizeColumnsToContents()
 
     # -------------------------------------------------
@@ -166,7 +176,7 @@ class ClientesDialog(QDialog):
         except ValueError:
             return None
 
-    # -------------------------------------------------
+    #-------------------------------------------------
     # Crear cliente (pide TODOS los datos)
     # -------------------------------------------------
     def add_cliente(self):
@@ -178,6 +188,7 @@ class ClientesDialog(QDialog):
         form = QFormLayout()
 
         ed_nombre = QLineEdit()
+        ed_rut = crear_lineedit_rut(dlg)
 
         ed_telefono = QLineEdit()
         ed_telefono.setValidator(crear_validador_telefono(dlg))
@@ -189,6 +200,7 @@ class ClientesDialog(QDialog):
         configurar_combo_comuna(cb_comuna)
 
         form.addRow("Nombre:", ed_nombre)
+        form.addRow("RUT:", ed_rut)
         form.addRow("Teléfono:", ed_telefono)
         form.addRow("Correo:", ed_correo)
         form.addRow("Dirección:", ed_direccion)
@@ -211,19 +223,46 @@ class ClientesDialog(QDialog):
             return
 
         nombre = ed_nombre.text().strip()
+        rut = ed_rut.text().strip()
         telefono = ed_telefono.text().strip() or None
         correo = ed_correo.text().strip() or None
         direccion = ed_direccion.text().strip() or None
         comuna = cb_comuna.currentText().strip() or None
 
-        if not nombre:
-            QMessageBox.warning(self, "Nuevo cliente", "El nombre no puede estar vacío.")
+        # Nombre y RUT obligatorios
+        if not nombre or not rut:
+            QMessageBox.warning(
+                self,
+                "Nuevo cliente",
+                "Nombre y RUT son obligatorios."
+            )
             return
+
+        # Normalizamos el RUT para comparar (sin puntos ni guion)
+        rut_limpio = rut.replace(".", "").replace("-", "").upper()
 
         session = SessionLocal()
         try:
+            # Buscar si ya existe un cliente con el mismo RUT
+            clientes = session.query(Cliente).all()
+            for c in clientes:
+                if not c.rut:
+                    continue
+                rut_existente_limpio = (
+                    c.rut.replace(".", "").replace("-", "").upper()
+                )
+                if rut_existente_limpio == rut_limpio:
+                    QMessageBox.warning(
+                        self,
+                        "Nuevo cliente",
+                        f"Ya existe un cliente con este RUT:\n{c.nombre} ({c.rut})."
+                    )
+                    return
+
+            # Si no existe, creamos el cliente nuevo
             c = Cliente(
                 nombre=nombre,
+                rut=rut,
                 telefono=telefono,
                 correo=correo,
                 direccion=direccion,
@@ -314,6 +353,7 @@ class ClientesDialog(QDialog):
                 self._datos_clientes.append({
                     "id": c.id,
                     "nombre": c.nombre or "",
+                    "rut": getattr(c, "rut", "") or "",
                     "telefono": c.telefono or "",
                     "correo": c.correo or "",
                     "direccion": c.direccion or "",
