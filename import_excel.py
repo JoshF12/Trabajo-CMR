@@ -1,4 +1,3 @@
-# import_excel.py
 import pandas as pd
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -37,37 +36,46 @@ def limpiar_nan(valor, es_telefono: bool = False) -> str:
         return ""
 
     if es_telefono:
-        # Si viene como float tipo "952288367.0"
         if txt.endswith(".0"):
             txt = txt[:-2]
 
-        # Notación científica tipo "9.5243e+08"
         if "e+" in txt.lower() or "e-" in txt.lower():
             try:
                 txt = str(int(float(txt)))
             except Exception:
                 pass
 
-        # Quitar espacios, comas, guiones
         txt = txt.replace(" ", "").replace(",", "").replace("-", "")
 
     return txt
 
 
-def limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+def a_entero_o_cero(valor) -> int:
     """
-    Limpia el DataFrame leído desde el Excel de Raíz Diseño.
+    Convierte cualquier valor en entero seguro:
+    - Si es NaN, "", None → 0
+    - Si viene como float o string "10.0" → 10
+    - Si viene como "NaN" → 0
+    """
+    try:
+        if valor is None:
+            return 0
 
-    - Elimina filas totalmente vacías.
-    - Rellena hacia abajo columnas de contexto del pedido (fecha, canal, número pedido...).
-    - NO rellena datos de contacto de un cliente con los de otro.
-    - Datos de contacto (teléfono, dirección, comuna, correo) se rellenan
-      solo dentro del mismo cliente.
-    """
-    # Eliminamos filas totalmente vacías
+        if isinstance(valor, float) and pd.isna(valor):
+            return 0
+
+        txt = str(valor).strip()
+        if not txt or txt.lower() == "nan":
+            return 0
+
+        return int(float(txt))
+    except Exception:
+        return 0
+
+
+def limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna(how="all").copy()
 
-    # Relleno "global" solo para columnas de contexto (no datos personales)
     cols_ffill_global = [
         "fecha", "canal_venta", "numero_pedido",
         "forma_pago", "tipo_documento", "pago",
@@ -79,20 +87,16 @@ def limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
     cleaned_rows = []
     current_cliente = None
-    # Guardamos la última info de contacto conocida por cliente
     contactos_por_cliente: dict[str, dict[str, str]] = {}
 
     for _, original_row in df.iterrows():
         row = original_row.copy()
 
-        # Nombre del cliente, ya limpio
         cliente_str = limpiar_nan(row.get("cliente"))
 
-        # Si esta fila trae un cliente explícito
         if cliente_str:
             current_cliente = cliente_str
 
-            # Construimos / actualizamos info de contacto para este cliente
             info = contactos_por_cliente.get(current_cliente, {})
             for campo in ["telefono", "direccion", "comuna", "correo"]:
                 if campo in df.columns:
@@ -104,11 +108,9 @@ def limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
                         info[campo] = val
             contactos_por_cliente[current_cliente] = info
 
-        # Si no trae cliente explícito pero hay uno en curso -> misma "cabecera"
         elif current_cliente:
             row["cliente"] = current_cliente
 
-        # Rellenar datos de contacto SOLO con la info del mismo cliente
         if current_cliente and current_cliente in contactos_por_cliente:
             info = contactos_por_cliente[current_cliente]
             for campo in ["telefono", "direccion", "comuna", "correo"]:
@@ -122,7 +124,6 @@ def limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
                     else:
                         row[campo] = val
         else:
-            # No hay cliente actual, igual limpiamos los campos de contacto
             for campo in ["telefono", "direccion", "comuna", "correo"]:
                 if campo in df.columns:
                     row[campo] = limpiar_nan(
@@ -130,7 +131,6 @@ def limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
                         es_telefono=(campo == "telefono")
                     )
 
-        # Limpiamos también otras columnas de texto (para evitar "nan")
         for campo_texto in [
             "canal_venta", "numero_pedido", "forma_pago",
             "tipo_documento", "despacho", "estado", "producto"
@@ -145,16 +145,6 @@ def limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def importar_excel(ruta_excel: str):
-    """Importa un Excel con la estructura usada por Raíz Diseño.
-
-    Flujo:
-    1) Detectar fila de encabezados (donde la primera columna es 'FECHA').
-    2) Renombrar columnas a nombres internos.
-    3) Limpiar el DataFrame (rellenos controlados + NaN -> "").
-    4) Crear/actualizar clientes, pedidos, e ítems en SQLite.
-    """
-
-    # 1) Leemos sin encabezados para encontrar la fila donde está "FECHA"
     df_raw = pd.read_excel(ruta_excel, header=None)
 
     header_rows = df_raw.index[df_raw.iloc[:, 0] == "FECHA"].tolist()
@@ -162,10 +152,8 @@ def importar_excel(ruta_excel: str):
         raise ValueError("No se encontró una fila con 'FECHA' como encabezado.")
     header_row = header_rows[0]
 
-    # 2) Volvemos a leer el Excel usando esa fila como encabezado real
     df = pd.read_excel(ruta_excel, header=header_row)
 
-    # 3) Renombramos columnas a nombres internos
     df = df.rename(columns={
         "FECHA": "fecha",
         "CANAL DE VENTA": "canal_venta",
@@ -185,30 +173,21 @@ def importar_excel(ruta_excel: str):
         "ESTADO": "estado",
     })
 
-    # 4) Limpiamos el DataFrame (rellenos controlados y NaN -> "")
     df = limpiar_dataframe(df)
 
-    # 5) Conexión a la base SQLite
     session: Session = SessionLocal()
 
     try:
         correlativo_interno = 1
 
         for _, row in df.iterrows():
-            # Filas inútiles: sin cliente y sin producto
             cliente_nombre = limpiar_nan(row.get("cliente"))
             producto_nombre = limpiar_nan(row.get("producto"))
 
             if not cliente_nombre and not producto_nombre:
                 continue
 
-            # Si tampoco hay fecha, la descartamos
             if pd.isna(row.get("fecha")):
-                continue
-
-            # ------------------- CLIENTE -------------------
-            if not cliente_nombre:
-                # Sin cliente no tiene sentido importar
                 continue
 
             cliente = (
@@ -231,9 +210,8 @@ def importar_excel(ruta_excel: str):
                     comuna=com,
                 )
                 session.add(cliente)
-                session.flush()  # para obtener cliente.id
+                session.flush()
             else:
-                # Actualizamos datos de contacto si vienen en esta fila
                 if tel:
                     cliente.telefono = tel
                 if cor:
@@ -243,7 +221,6 @@ def importar_excel(ruta_excel: str):
                 if com:
                     cliente.comuna = com
 
-            # ------------------- PEDIDO -------------------
             fecha_pedido = pd.to_datetime(row.get("fecha")).to_pydatetime()
 
             numero_pedido = limpiar_nan(row.get("numero_pedido"))
@@ -255,6 +232,7 @@ def importar_excel(ruta_excel: str):
                 .filter(Pedido.numero_pedido == numero_pedido)
                 .first()
             )
+
             if not pedido:
                 pedido = Pedido(
                     numero_pedido=numero_pedido,
@@ -262,16 +240,14 @@ def importar_excel(ruta_excel: str):
                     canal_venta=limpiar_nan(row.get("canal_venta")),
                     forma_pago=limpiar_nan(row.get("forma_pago")),
                     tipo_documento=limpiar_nan(row.get("tipo_documento")),
-                    monto_pagado=row.get("pago") if not pd.isna(row.get("pago")) else 0,
-                    saldo=row.get("saldo") if not pd.isna(row.get("saldo")) else 0,
-                    despacho=limpiar_nan(row.get("despacho")),
+                    monto_pagado=a_entero_o_cero(row.get("pago")),
+                    saldo=a_entero_o_cero(row.get("saldo")),
                     estado=limpiar_nan(row.get("estado")),
                     cliente_id=cliente.id,
                 )
                 session.add(pedido)
                 session.flush()
             else:
-                # Podríamos actualizar algunos campos si estuvieran vacíos
                 if not pedido.canal_venta:
                     pedido.canal_venta = limpiar_nan(row.get("canal_venta"))
                 if not pedido.forma_pago:
@@ -279,15 +255,10 @@ def importar_excel(ruta_excel: str):
                 if not pedido.tipo_documento:
                     pedido.tipo_documento = limpiar_nan(row.get("tipo_documento"))
 
-            # ------------------- ITEM PEDIDO -------------------
             if not producto_nombre:
-                # fila sin producto → no creamos ítem
                 continue
 
-            try:
-                unidades = int(row.get("unidades") or 0)
-            except Exception:
-                unidades = 0
+            unidades = a_entero_o_cero(row.get("unidades"))
             if unidades <= 0:
                 unidades = 1
 
