@@ -4,7 +4,7 @@ from datetime import datetime
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget,
     QTableWidgetItem, QPushButton, QMessageBox,
-    QFormLayout, QComboBox, QDateEdit, QLineEdit, QLabel
+    QFormLayout, QComboBox, QDateEdit, QLineEdit, QLabel, QCompleter
 )
 from PySide6.QtCore import Qt, QDate, QRegularExpression
 from PySide6.QtGui import QRegularExpressionValidator
@@ -187,6 +187,10 @@ class ItemsPedidoDialog(QDialog):
             ["ID", "Producto", "Cantidad", "Precio unitario"]
         )
         layout.addWidget(self.table)
+                # Resumen de montos del pedido
+        self.lbl_resumen = QLabel()
+        layout.addWidget(self.lbl_resumen)
+
 
         hb = QHBoxLayout()
         self.btn_add = QPushButton("Agregar ítem")
@@ -208,7 +212,7 @@ class ItemsPedidoDialog(QDialog):
         self.load_items()
 
     def load_items(self) -> None:
-        """Carga los ítems actuales del pedido desde la BD."""
+        """Carga los ítems actuales del pedido desde la BD y calcula resumen."""
         session = SessionLocal()
         try:
             items = (
@@ -216,15 +220,28 @@ class ItemsPedidoDialog(QDialog):
                 .filter_by(pedido_id=self._pedido_id)
                 .all()
             )
+            pedido = session.query(Pedido).get(self._pedido_id)
 
             rows: list[dict] = []
+            total_pedido = 0
             for it in items:
-                rows.append({
-                    "id": it.id,
-                    "producto": it.producto or "",
-                    "cantidad": it.cantidad or 0,
-                    "precio": it.precio_unitario or 0,
-                })
+                cantidad = it.cantidad or 0
+                precio = it.precio_unitario or 0
+                total_pedido += int(cantidad) * int(precio)
+                rows.append(
+                    {
+                        "id": it.id,
+                        "producto": it.producto or "",
+                        "cantidad": cantidad,
+                        "precio": precio,
+                    }
+                )
+
+            abono = pedido.monto_pagado or 0 if pedido else 0
+            if pedido and pedido.saldo is not None:
+                saldo_final = pedido.saldo
+            else:
+                saldo_final = max(int(total_pedido) - int(abono), 0)
         finally:
             session.close()
 
@@ -237,6 +254,11 @@ class ItemsPedidoDialog(QDialog):
             self.table.setItem(r, 3, QTableWidgetItem(str(d["precio"])))
 
         self.table.resizeColumnsToContents()
+
+        self.lbl_resumen.setText(
+            f"Monto: {int(total_pedido)} | Abono: {int(abono)} | Saldo final: {int(saldo_final)}"
+        )
+
 
     def add_item_row(self) -> None:
         """Agrega una fila vacía para un nuevo ítem."""
@@ -333,15 +355,16 @@ class ItemsPedidoDialog(QDialog):
                 # Primero guardamos los cambios
             session.commit()
 
-            # ---- NUEVO: calcular el total del pedido ----
+                        # ---- Calcular el total del pedido y actualizar saldo final ----
             total = session.query(ItemPedido).filter_by(pedido_id=self._pedido_id).all()
-            total_pedido = sum([(int(it.cantidad or 0)) * int(it.precio_unitario or 0) for it in total])
+            total_pedido = sum(
+                (int(it.cantidad or 0)) * int(it.precio_unitario or 0) for it in total
+            )
 
-
-            # Obtener el pedido y actualizar su monto
             pedido = session.query(Pedido).get(self._pedido_id)
-            pedido.monto_pagado = total_pedido
-            pedido.saldo = 0  # puedes cambiar esto si quieres otro comportamiento
+            if pedido:
+                abono = pedido.monto_pagado or 0
+                pedido.saldo = max(int(total_pedido) - int(abono), 0)
 
             session.commit()
             # ---------------------------------------------
@@ -373,11 +396,21 @@ class PedidoFormDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        # Combo de clientes + botón "Nuevo cliente"
+               # Combo de clientes + botón "Nuevo cliente"
         self.cb_cliente = QComboBox()
         self._clientes_ids: list[int] = []
         self.btn_nuevo_cliente = QPushButton("Nuevo cliente")
         self.cargar_clientes()
+
+        # Hacer el combo de clientes editable con búsqueda por texto
+        self.cb_cliente.setEditable(True)
+        # Evita que al escribir se creen clientes nuevos en la lista
+        self.cb_cliente.setInsertPolicy(QComboBox.NoInsert)
+        # Autocompletado que busca el texto en cualquier parte del nombre/teléfono
+        completer = QCompleter(self.cb_cliente.model(), self.cb_cliente)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        self.cb_cliente.setCompleter(completer)
 
         # Widget para agrupar combo + botón en la misma fila del formulario
         hb_cliente = QHBoxLayout()
@@ -392,8 +425,8 @@ class PedidoFormDialog(QDialog):
         self.ed_canal = QLineEdit()
         self.ed_forma_pago = QLineEdit()
         self.ed_tipo_doc = QLineEdit()
-        self.ed_monto = QLineEdit()
-        self.ed_saldo = QLineEdit()
+        self.ed_abono = QLineEdit()
+
 
         # Despacho: solo 2 opciones
         self.cb_despacho = QComboBox()
@@ -414,9 +447,9 @@ class PedidoFormDialog(QDialog):
         form.addRow("Canal:", self.ed_canal)
         form.addRow("Forma de pago:", self.ed_forma_pago)
         form.addRow("Documento:", self.ed_tipo_doc)
-        form.addRow("Monto pagado:", self.ed_monto)
-        form.addRow("Saldo:", self.ed_saldo)
+        form.addRow("Abono:", self.ed_abono)
         form.addRow("Despacho:", self.cb_despacho)
+
         form.addRow("Estado:", self.cb_estado)
 
         layout.addLayout(form)
@@ -616,8 +649,9 @@ class PedidoFormDialog(QDialog):
         self.ed_canal.setText(p.canal_venta or "")
         self.ed_forma_pago.setText(p.forma_pago or "")
         self.ed_tipo_doc.setText(p.tipo_documento or "")
-        self.ed_monto.setText(str(p.monto_pagado or ""))
-        self.ed_saldo.setText(str(p.saldo or ""))
+        # El abono se guarda en el campo monto_pagado
+        self.ed_abono.setText(str(p.monto_pagado or ""))
+
 
         # Despacho: si en BD hay algo distinto, se agrega a la lista
         despacho_actual = p.despacho or ""
@@ -644,14 +678,9 @@ class PedidoFormDialog(QDialog):
         fecha = datetime(fecha_q.year(), fecha_q.month(), fecha_q.day())
 
         try:
-            monto = int(self.ed_monto.text() or 0)
+            abono = int(self.ed_abono.text() or 0)
         except Exception:
-            monto = 0.0
-
-        try:
-            saldo = int(self.ed_saldo.text() or 0)
-        except Exception:
-            saldo = 0.0
+            abono = 0
 
         return {
             "cliente_id": cliente_id,
@@ -660,11 +689,11 @@ class PedidoFormDialog(QDialog):
             "canal": self.ed_canal.text().strip(),
             "forma_pago": self.ed_forma_pago.text().strip(),
             "tipo_doc": self.ed_tipo_doc.text().strip(),
-            "monto": monto,
-            "saldo": saldo,
+            "abono": abono,
             "despacho": self.cb_despacho.currentText().strip(),
             "estado": self.cb_estado.currentText().strip(),
         }
+
 
 
 # ===================================================
@@ -725,7 +754,7 @@ class PedidosDialog(QDialog):
 
         # ---- Tabla ----
         self.table = QTableWidget()
-        self.table.setColumnCount(9)
+        self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels(
             [
                 "ID",
@@ -735,10 +764,12 @@ class PedidosDialog(QDialog):
                 "RUT",
                 "Teléfono",
                 "Monto",
-                "Saldo",
+                "Abono",
+                "Saldo final",
                 "Estado",
             ]
         )
+
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.table)
@@ -820,8 +851,10 @@ class PedidosDialog(QDialog):
             # El resto se corre una posición
             self.table.setItem(i, 5, QTableWidgetItem(d["telefono"]))
             self.table.setItem(i, 6, QTableWidgetItem(str(int(d["monto"]))))
-            self.table.setItem(i, 7, QTableWidgetItem(str(int(d["saldo"]))))
-            self.table.setItem(i, 8, QTableWidgetItem(d["estado"]))
+            self.table.setItem(i, 7, QTableWidgetItem(str(int(d["abono"]))))
+            self.table.setItem(i, 8, QTableWidgetItem(str(int(d["saldo_final"]))))
+            self.table.setItem(i, 9, QTableWidgetItem(d["estado"]))
+
 
         self.table.resizeColumnsToContents()
 
@@ -853,6 +886,17 @@ class PedidosDialog(QDialog):
                     telefono = ""
                     rut = ""
 
+                                # Calcular monto del pedido a partir de los ítems
+                total_pedido = 0
+                for it in p.items:
+                    total_pedido += int(it.cantidad or 0) * int(it.precio_unitario or 0)
+
+                abono = p.monto_pagado or 0
+                if p.saldo is not None:
+                    saldo_final = p.saldo
+                else:
+                    saldo_final = max(int(total_pedido) - int(abono), 0)
+
                 self._datos_pedidos.append(
                     {
                         "id": p.id,
@@ -861,11 +905,13 @@ class PedidosDialog(QDialog):
                         "cliente": nombre,
                         "rut": rut,
                         "telefono": telefono,
-                        "monto": p.monto_pagado or 0,
-                        "saldo": p.saldo or 0,
+                        "monto": total_pedido,
+                        "abono": abono,
+                        "saldo_final": saldo_final,
                         "estado": p.estado or "",
                     }
                 )
+
 
         finally:
             session.close()
@@ -985,11 +1031,14 @@ class PedidosDialog(QDialog):
                     canal_venta=datos["canal"],
                     forma_pago=datos["forma_pago"],
                     tipo_documento=datos["tipo_doc"],
-                    monto_pagado=datos["monto"],
-                    saldo=datos["saldo"],
+                    # Guardamos el abono en monto_pagado
+                    monto_pagado=datos["abono"],
+                    # El saldo final se calculará según los ítems
+                    saldo=0,
                     despacho=datos["despacho"],
                     estado=datos["estado"],
                 )
+
                 session.add(p)
                 session.commit()
                 nuevo_id = p.id
@@ -1039,11 +1088,21 @@ class PedidosDialog(QDialog):
                 pedido.canal_venta = datos["canal"]
                 pedido.forma_pago = datos["forma_pago"]
                 pedido.tipo_documento = datos["tipo_doc"]
-                pedido.monto_pagado = datos["monto"]
-                pedido.saldo = datos["saldo"]
+                               # Guardamos el abono
+                pedido.monto_pagado = datos["abono"]
                 pedido.despacho = datos["despacho"]
                 pedido.estado = datos["estado"]
+
+                # Recalcular saldo final según ítems
+                total_pedido = 0
+                for it in pedido.items:
+                    total_pedido += int(it.cantidad or 0) * int(it.precio_unitario or 0)
+
+                abono = pedido.monto_pagado or 0
+                pedido.saldo = max(int(total_pedido) - int(abono), 0)
+
                 session.commit()
+
             finally:
                 session.close()
 
@@ -1100,13 +1159,15 @@ class HistorialClienteDialog(QDialog):
         layout = QVBoxLayout(self)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(
-            ["ID pedido", "N° Pedido", "Fecha", "Monto pagado", "Saldo", "Estado"]
+            ["ID pedido", "N° Pedido", "Fecha", "Monto", "Abono", "Saldo final", "Estado"]
         )
+
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.table)
+        
 
         hb = QHBoxLayout()
         self.btn_items = QPushButton("Ver ítems")
@@ -1134,6 +1195,17 @@ class HistorialClienteDialog(QDialog):
 
             datos: list[dict] = []
             for p in pedidos:
+                                # Calcular monto del pedido desde los ítems
+                total_pedido = 0
+                for it in p.items:
+                    total_pedido += int(it.cantidad or 0) * int(it.precio_unitario or 0)
+
+                abono = p.monto_pagado or 0
+                if p.saldo is not None:
+                    saldo_final = p.saldo
+                else:
+                    saldo_final = max(int(total_pedido) - int(abono), 0)
+
                 datos.append(
                     {
                         "id": p.id,
@@ -1141,11 +1213,13 @@ class HistorialClienteDialog(QDialog):
                         "fecha": p.fecha_pedido.strftime("%Y-%m-%d")
                         if p.fecha_pedido
                         else "",
-                        "monto": p.monto_pagado or 0,
-                        "saldo": p.saldo or 0,
+                        "monto": total_pedido,
+                        "abono": abono,
+                        "saldo_final": saldo_final,
                         "estado": p.estado or "",
                     }
                 )
+
         finally:
             session.close()
 
@@ -1156,8 +1230,9 @@ class HistorialClienteDialog(QDialog):
             self.table.setItem(i, 1, QTableWidgetItem(d["numero"]))
             self.table.setItem(i, 2, QTableWidgetItem(d["fecha"]))
             self.table.setItem(i, 3, QTableWidgetItem(str(d["monto"])))
-            self.table.setItem(i, 4, QTableWidgetItem(str(d["saldo"])))
-            self.table.setItem(i, 5, QTableWidgetItem(d["estado"]))
+            self.table.setItem(i, 4, QTableWidgetItem(str(d["abono"])))
+            self.table.setItem(i, 5, QTableWidgetItem(str(d["saldo_final"])))
+            self.table.setItem(i, 6, QTableWidgetItem(d["estado"]))
 
         self.table.resizeColumnsToContents()
 
