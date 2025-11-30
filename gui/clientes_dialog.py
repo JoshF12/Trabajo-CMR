@@ -179,6 +179,9 @@ class ClientesDialog(QDialog):
     #-------------------------------------------------
     # Crear cliente (pide TODOS los datos)
     # -------------------------------------------------
+        #-------------------------------------------------
+    # Crear cliente (pide TODOS los datos)
+    # -------------------------------------------------
     def add_cliente(self):
         dlg = QDialog(self)
         dlg.setWindowTitle("Nuevo cliente")
@@ -216,27 +219,44 @@ class ClientesDialog(QDialog):
         hb.addWidget(btn_cancel)
         vbox.addLayout(hb)
 
-        btn_ok.clicked.connect(dlg.accept)
+        # --- CAMBIO IMPORTANTE: validamos ANTES de aceptar el diálogo ---
+        def on_guardar():
+            nombre = ed_nombre.text().strip()
+            rut = ed_rut.text().strip()
+
+            # Nombre y RUT obligatorios
+            if not nombre or not rut:
+                QMessageBox.warning(
+                    dlg,
+                    "Nuevo cliente",
+                    "Nombre y RUT son obligatorios."
+                )
+                # Dejamos el foco donde falta info
+                if not nombre:
+                    ed_nombre.setFocus()
+                else:
+                    ed_rut.setFocus()
+                # NO cerramos el diálogo, solo salimos de la función
+                return
+
+            dlg.accept()
+
+        btn_ok.clicked.connect(on_guardar)
         btn_cancel.clicked.connect(dlg.reject)
+
+        # Para que NO parta en el RUT, dejamos el foco en el nombre
+        ed_nombre.setFocus()
 
         if dlg.exec() != QDialog.Accepted:
             return
 
+        # Si llegó hasta aquí, es porque pasó la validación
         nombre = ed_nombre.text().strip()
         rut = ed_rut.text().strip()
         telefono = ed_telefono.text().strip() or None
         correo = ed_correo.text().strip() or None
         direccion = ed_direccion.text().strip() or None
         comuna = cb_comuna.currentText().strip() or None
-
-        # Nombre y RUT obligatorios
-        if not nombre or not rut:
-            QMessageBox.warning(
-                self,
-                "Nuevo cliente",
-                "Nombre y RUT son obligatorios."
-            )
-            return
 
         # Normalizamos el RUT para comparar (sin puntos ni guion)
         rut_limpio = rut.replace(".", "").replace("-", "").upper()
@@ -253,7 +273,7 @@ class ClientesDialog(QDialog):
                 )
                 if rut_existente_limpio == rut_limpio:
                     QMessageBox.warning(
-                        self,
+                        dlg,
                         "Nuevo cliente",
                         f"Ya existe un cliente con este RUT:\n{c.nombre} ({c.rut})."
                     )
