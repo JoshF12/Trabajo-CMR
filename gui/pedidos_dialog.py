@@ -82,6 +82,52 @@ def configurar_combo_comuna(combo: QComboBox, valor_actual: str | None = None) -
     else:
         combo.setCurrentIndex(-1)
 
+def formatear_rut(texto: str) -> str:
+    """
+    Limpia y formatea un RUT chileno:
+    - Deja solo dígitos y K/k
+    - Pone puntos y guion: 12345678K -> 12.345.678-K
+    """
+    limpio = "".join(ch for ch in texto if ch.isdigit() or ch in "Kk").upper()
+    if not limpio:
+        return ""
+
+    if len(limpio) == 1:
+        # Solo un dígito/dv aún, no formateamos
+        return limpio
+
+    cuerpo = limpio[:-1]
+    dv = limpio[-1]
+
+    # Separar el cuerpo en grupos de 3 desde la derecha
+    rev = cuerpo[::-1]
+    grupos = [rev[i:i+3] for i in range(0, len(rev), 3)]
+    cuerpo_fmt = ".".join(g[::-1] for g in grupos[::-1])
+
+    return f"{cuerpo_fmt}-{dv}"
+
+
+def crear_lineedit_rut(parent=None) -> QLineEdit:
+    """
+    Crea un QLineEdit que formatea el RUT en vivo mientras se escribe.
+    """
+    le = QLineEdit(parent)
+    le._rut_lock = False  # bandera para evitar recursión
+
+    def on_text_edited(text: str):
+        if le._rut_lock:
+            return
+        le._rut_lock = True
+        formateado = formatear_rut(text)
+        le.setText(formateado)
+        # Por simplicidad dejamos el cursor al final
+        le.setCursorPosition(len(formateado))
+        le._rut_lock = False
+
+    le.textEdited.connect(on_text_edited)
+    return le
+
+
 
 # ===================================================
 # ========== GENERACIÓN NÚMERO DE PEDIDO ============
@@ -284,9 +330,25 @@ class ItemsPedidoDialog(QDialog):
             for it in existentes.values():
                 session.delete(it)
 
+                # Primero guardamos los cambios
             session.commit()
+
+            # ---- NUEVO: calcular el total del pedido ----
+            total = session.query(ItemPedido).filter_by(pedido_id=self._pedido_id).all()
+            total_pedido = sum([(int(it.cantidad or 0)) * int(it.precio_unitario or 0) for it in total])
+
+
+            # Obtener el pedido y actualizar su monto
+            pedido = session.query(Pedido).get(self._pedido_id)
+            pedido.monto_pagado = total_pedido
+            pedido.saldo = 0  # puedes cambiar esto si quieres otro comportamiento
+
+            session.commit()
+            # ---------------------------------------------
+
             QMessageBox.information(self, "Ítems", "Cambios guardados.")
             self.load_items()
+
 
         except Exception as exc:
             session.rollback()
@@ -415,7 +477,7 @@ class PedidoFormDialog(QDialog):
     def crear_nuevo_cliente(self) -> None:
         """
         Crear un cliente desde el formulario de pedido,
-        preguntando todos los datos (pueden quedar en blanco excepto el nombre).
+        preguntando todos los datos.
         Con restricción de solo números en teléfono y combo de comunas.
         """
         dlg = QDialog(self)
@@ -426,6 +488,7 @@ class PedidoFormDialog(QDialog):
         form = QFormLayout()
 
         ed_nombre = QLineEdit()
+        ed_rut = crear_lineedit_rut(dlg)
 
         ed_telefono = QLineEdit()
         ed_telefono.setValidator(crear_validador_telefono(dlg))
@@ -437,6 +500,7 @@ class PedidoFormDialog(QDialog):
         configurar_combo_comuna(cb_comuna)
 
         form.addRow("Nombre:", ed_nombre)
+        form.addRow("RUT:", ed_rut)
         form.addRow("Teléfono:", ed_telefono)
         form.addRow("Correo:", ed_correo)
         form.addRow("Dirección:", ed_direccion)
@@ -459,27 +523,61 @@ class PedidoFormDialog(QDialog):
             return
 
         nombre = ed_nombre.text().strip()
+        rut = ed_rut.text().strip()
         telefono = ed_telefono.text().strip() or None
         correo = ed_correo.text().strip() or None
         direccion = ed_direccion.text().strip() or None
         comuna = cb_comuna.currentText().strip() or None
 
-        if not nombre:
-            QMessageBox.warning(self, "Nuevo cliente", "El nombre no puede estar vacío.")
+        # Nombre y RUT obligatorios
+        if not nombre or not rut:
+            QMessageBox.warning(
+                self,
+                "Nuevo cliente",
+                "Nombre y RUT son obligatorios."
+            )
             return
 
+        rut_limpio = rut.replace(".", "").replace("-", "").upper()
+
         session = SessionLocal()
+        nuevo_id: int | None = None
         try:
-            c = Cliente(
-                nombre=nombre,
-                telefono=telefono,
-                correo=correo,
-                direccion=direccion,
-                comuna=comuna,
-            )
-            session.add(c)
-            session.commit()
-            nuevo_id = c.id
+            # Buscar si ya existe un cliente con ese RUT
+            cliente_existente = None
+            for c in session.query(Cliente).all():
+                if not c.rut:
+                    continue
+                rut_existente_limpio = (
+                    c.rut.replace(".", "").replace("-", "").upper()
+                )
+                if rut_existente_limpio == rut_limpio:
+                    cliente_existente = c
+                    break
+
+            if cliente_existente:
+                # Ya existe: usamos ese cliente para el pedido
+                QMessageBox.information(
+                    self,
+                    "Cliente existente",
+                    f"Ya existe un cliente con este RUT:\n"
+                    f"{cliente_existente.nombre} ({cliente_existente.rut}).\n"
+                    f"Se usará ese cliente en el pedido."
+                )
+                nuevo_id = cliente_existente.id
+            else:
+                # No existe: creamos un nuevo cliente
+                c = Cliente(
+                    nombre=nombre,
+                    rut=rut,
+                    telefono=telefono,
+                    correo=correo,
+                    direccion=direccion,
+                    comuna=comuna,
+                )
+                session.add(c)
+                session.commit()
+                nuevo_id = c.id
         except Exception as exc:
             session.rollback()
             QMessageBox.critical(self, "Error", str(exc))
@@ -487,11 +585,12 @@ class PedidoFormDialog(QDialog):
         finally:
             session.close()
 
-        # Recargar combo y seleccionar el nuevo cliente
+        # Recargar combo y seleccionar el cliente (nuevo o existente)
         self.cargar_clientes()
         if nuevo_id in self._clientes_ids:
             idx = self._clientes_ids.index(nuevo_id)
             self.cb_cliente.setCurrentIndex(idx)
+
 
     # -------------------- PEDIDO --------------------
 
@@ -545,12 +644,12 @@ class PedidoFormDialog(QDialog):
         fecha = datetime(fecha_q.year(), fecha_q.month(), fecha_q.day())
 
         try:
-            monto = float(self.ed_monto.text() or 0)
+            monto = int(self.ed_monto.text() or 0)
         except Exception:
             monto = 0.0
 
         try:
-            saldo = float(self.ed_saldo.text() or 0)
+            saldo = int(self.ed_saldo.text() or 0)
         except Exception:
             saldo = 0.0
 
@@ -626,13 +725,14 @@ class PedidosDialog(QDialog):
 
         # ---- Tabla ----
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
+        self.table.setColumnCount(9)
         self.table.setHorizontalHeaderLabels(
             [
                 "ID",
                 "N° Pedido",
                 "Fecha",
                 "Cliente",
+                "RUT",
                 "Teléfono",
                 "Monto",
                 "Saldo",
@@ -715,12 +815,16 @@ class PedidosDialog(QDialog):
             self.table.setItem(i, 1, QTableWidgetItem(d["numero"]))
             self.table.setItem(i, 2, QTableWidgetItem(d["fecha"]))
             self.table.setItem(i, 3, QTableWidgetItem(d["cliente"]))
-            self.table.setItem(i, 4, QTableWidgetItem(d["telefono"]))
-            self.table.setItem(i, 5, QTableWidgetItem(str(d["monto"])))
-            self.table.setItem(i, 6, QTableWidgetItem(str(d["saldo"])))
-            self.table.setItem(i, 7, QTableWidgetItem(d["estado"]))
+            # NUEVA COLUMNA RUT (columna 4)
+            self.table.setItem(i, 4, QTableWidgetItem(d.get("rut", "")))
+            # El resto se corre una posición
+            self.table.setItem(i, 5, QTableWidgetItem(d["telefono"]))
+            self.table.setItem(i, 6, QTableWidgetItem(str(int(d["monto"]))))
+            self.table.setItem(i, 7, QTableWidgetItem(str(int(d["saldo"]))))
+            self.table.setItem(i, 8, QTableWidgetItem(d["estado"]))
 
         self.table.resizeColumnsToContents()
+
 
     # ===============================================================
     # CARGAR PEDIDOS (CON TELÉFONO DEL CLIENTE)
@@ -742,9 +846,12 @@ class PedidosDialog(QDialog):
                 if p.cliente:
                     nombre = p.cliente.nombre or ""
                     telefono = p.cliente.telefono or ""
+                    # NUEVO: RUT formateado si existe
+                    rut = formatear_rut(p.cliente.rut) if getattr(p.cliente, "rut", None) else ""
                 else:
                     nombre = ""
                     telefono = ""
+                    rut = ""
 
                 self._datos_pedidos.append(
                     {
@@ -752,12 +859,14 @@ class PedidosDialog(QDialog):
                         "numero": p.numero_pedido or "",
                         "fecha": p.fecha_pedido.strftime("%Y-%m-%d") if p.fecha_pedido else "",
                         "cliente": nombre,
+                        "rut": rut,
                         "telefono": telefono,
                         "monto": p.monto_pagado or 0,
                         "saldo": p.saldo or 0,
                         "estado": p.estado or "",
                     }
                 )
+
         finally:
             session.close()
 
@@ -807,13 +916,17 @@ class PedidosDialog(QDialog):
 
         # Buscar por texto
         if modo == "Cliente":
-            filtrados = [
-                d for d in self._datos_pedidos
-                if texto in d["cliente"].lower()
-                or texto in d["telefono"].lower()
-            ]
+            filtrados = []
+            for d in self._datos_pedidos:
+                cliente = d["cliente"].lower()
+                telefono = d["telefono"].lower()
+                rut = d.get("rut", "").lower()
+                if texto in cliente or texto in telefono or texto in rut:
+                    filtrados.append(d)
+
             self._llenar_tabla(filtrados)
             return
+
 
         if modo == "N° Pedido":
             filtrados = [
@@ -966,6 +1079,9 @@ class PedidosDialog(QDialog):
 
         dlg = ItemsPedidoDialog(pid, self)
         dlg.exec()
+        # refrescar la tabla de pedidos para que se vea el nuevo monto
+        self.cargar()
+
 
 
 # ===================================================
@@ -1059,3 +1175,5 @@ class HistorialClienteDialog(QDialog):
 
         dlg = ItemsPedidoDialog(pid, self)
         dlg.exec()
+        self.cargar()
+
