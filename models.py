@@ -12,12 +12,14 @@ class Cliente(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     nombre = Column(String(100), nullable=False)
+    rut = Column(String(20))
     telefono = Column(String(20))
     correo = Column(String(100))
     direccion = Column(String(150))
     comuna = Column(String(100))
 
     pedidos = relationship("Pedido", back_populates="cliente", cascade="all, delete-orphan")
+
 
 class Pedido(Base):
     __tablename__ = "pedidos"
@@ -28,8 +30,8 @@ class Pedido(Base):
     canal_venta = Column(String(50))
     forma_pago = Column(String(50))
     tipo_documento = Column(String(50))
-    monto_pagado = Column(Numeric(12,2))
-    saldo = Column(Numeric(12,2))
+    monto_pagado = Column(Integer)
+    saldo = Column(Integer)
     despacho = Column(String(100))
     estado = Column(String(50))
     cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=False)
@@ -37,14 +39,15 @@ class Pedido(Base):
     cliente = relationship("Cliente", back_populates="pedidos")
     items = relationship("ItemPedido", back_populates="pedido", cascade="all, delete-orphan")
 
+
 class ItemPedido(Base):
     __tablename__ = "items_pedido"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     producto = Column(String(200), nullable=False)
     cantidad = Column(Integer, nullable=False)
-    precio_unitario = Column(Numeric(12,2))
-    total_item = Column(Numeric(12,2))
+    precio_unitario = Column(Integer)
+    total_item = Column(Integer)
     pedido_id = Column(Integer, ForeignKey("pedidos.id"), nullable=False)
 
     pedido = relationship("Pedido", back_populates="items")
