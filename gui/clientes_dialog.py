@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QPushButton, QMessageBox,
     QFormLayout, QLineEdit, QComboBox, QLabel
 )
-from PySide6.QtCore import QRegularExpression
+from PySide6.QtCore import QRegularExpression, Qt
 from PySide6.QtGui import QRegularExpressionValidator
 
 from db import SessionLocal
@@ -24,8 +24,17 @@ class EditClienteDialog(QDialog):
 
     def __init__(self, cliente, parent=None):
         super().__init__(parent)
+
+        # 👉 permitir maximizar / minimizar
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowMaximizeButtonHint
+            | Qt.WindowMinimizeButtonHint
+        )
+
         self.setWindowTitle("Editar cliente")
         self.resize(400, 250)
+
         self._cliente = cliente
 
         layout = QVBoxLayout(self)
@@ -87,6 +96,14 @@ class ClientesDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # 👉 permitir maximizar / minimizar
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowMaximizeButtonHint
+            | Qt.WindowMinimizeButtonHint
+        )
+
         self.setWindowTitle("Clientes - Raíz Diseño")
         self.resize(800, 450)
 
@@ -184,6 +201,14 @@ class ClientesDialog(QDialog):
     # -------------------------------------------------
     def add_cliente(self):
         dlg = QDialog(self)
+
+        # 👉 permitir maximizar / minimizar
+        dlg.setWindowFlags(
+            dlg.windowFlags()
+            | Qt.WindowMaximizeButtonHint
+            | Qt.WindowMinimizeButtonHint
+     )
+
         dlg.setWindowTitle("Nuevo cliente")
         dlg.resize(400, 250)
 
