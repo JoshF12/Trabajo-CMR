@@ -176,8 +176,17 @@ class ItemsPedidoDialog(QDialog):
 
     def __init__(self, pedido_id: int, parent=None) -> None:
         super().__init__(parent)
+
+        # 👉 permitir maximizar / minimizar
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowMaximizeButtonHint
+            | Qt.WindowMinimizeButtonHint
+        )
+
         self.setWindowTitle("Ítems del pedido")
         self.resize(600, 300)
+
         self._pedido_id = pedido_id
 
         layout = QVBoxLayout(self)
@@ -389,9 +398,18 @@ class PedidoFormDialog(QDialog):
 
     def __init__(self, pedido: Pedido | None = None, parent=None) -> None:
         super().__init__(parent)
+
+        # 👉 permitir maximizar / minimizar
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowMaximizeButtonHint
+            | Qt.WindowMinimizeButtonHint
+        )
+
         self.setWindowTitle("Pedido")
         self.resize(450, 260)
         self._pedido = pedido
+
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -510,12 +528,20 @@ class PedidoFormDialog(QDialog):
     def crear_nuevo_cliente(self) -> None:
         """
         Crear un cliente desde el formulario de pedido,
-        preguntando todos los datos.
-        Con restricción de solo números en teléfono y combo de comunas.
+        ...
         """
         dlg = QDialog(self)
+
+        # 👉 permitir maximizar / minimizar
+        dlg.setWindowFlags(
+         dlg.windowFlags()
+         | Qt.WindowMaximizeButtonHint
+            | Qt.WindowMinimizeButtonHint
+     )
+
         dlg.setWindowTitle("Nuevo cliente")
         dlg.resize(400, 260)
+
 
         vbox = QVBoxLayout(dlg)
         form = QFormLayout()
@@ -705,8 +731,17 @@ class PedidosDialog(QDialog):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+
+        # 👉 permitir maximizar / minimizar
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowMaximizeButtonHint
+            | Qt.WindowMinimizeButtonHint
+        )
+
         self.setWindowTitle("Pedidos - Raíz Diseño")
         self.resize(950, 500)
+
 
         layout = QVBoxLayout(self)
 
@@ -1152,6 +1187,14 @@ class HistorialClienteDialog(QDialog):
 
     def __init__(self, cliente_id: int, parent=None) -> None:
         super().__init__(parent)
+
+        # 👉 permitir maximizar / minimizar
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowMaximizeButtonHint
+            | Qt.WindowMinimizeButtonHint
+        )
+
         self.setWindowTitle("Historial de compras")
         self.resize(750, 350)
         self._cliente_id = cliente_id
