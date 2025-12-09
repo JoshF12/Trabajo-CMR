@@ -1,4 +1,3 @@
-# main.py
 import sys
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QFont
@@ -7,7 +6,7 @@ from PySide6.QtCore import QSettings
 from gui.config_dialogs import ensure_initial_config
 from gui.main_window import MainWindow
 from init_db import init_db
-from backup import restaurar_si_no_existe
+from backup import restaurar_si_no_existe  # ya no se usa automáticamente
 
 APP_ORG = "RaizDiseno"
 APP_NAME = "CRM PyME"
@@ -41,8 +40,8 @@ def main():
     # 1) Asegurar configuración inicial (carpeta de backup, etc.)
     ensure_initial_config()
 
-    # 2) Intentar restaurar la BD desde backup si no existe
-    restaurar_si_no_existe()
+    # 2) (ANTES: restaurar_si_no_existe() AUTOMÁTICO)
+    #    Ya no restauramos automáticamente la BD aquí.
 
     # 3) Asegurar que la base de datos y las tablas existan
     init_db()
