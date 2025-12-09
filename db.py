@@ -1,10 +1,15 @@
-# db.py
 import os
+import sys
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-# Carpeta base del proyecto
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# ============================================
+#  BASE_DIR distinto si está en .exe (PyInstaller)
+# ============================================
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Archivo físico de la base de datos SQLite
 DB_PATH = os.path.join(BASE_DIR, "raiz_diseno.db")
