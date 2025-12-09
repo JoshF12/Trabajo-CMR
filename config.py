@@ -1,8 +1,17 @@
-# config.py
 import os
+import sys
 import json
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# ============================================
+#  BASE_DIR distinto si está en .exe (PyInstaller)
+# ============================================
+if getattr(sys, "frozen", False):
+    # Carpeta donde está el ejecutable
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    # Carpeta del script .py (modo desarrollo)
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 CONFIG_JSON_PATH = os.path.join(BASE_DIR, "config.json")
 
 
