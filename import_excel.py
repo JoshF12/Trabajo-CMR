@@ -285,3 +285,4 @@ def importar_excel(ruta_excel: str):
 if __name__ == "__main__":
     ruta = input("Ruta del Excel a importar: ").strip().strip('"')
     importar_excel(ruta)
+ 
