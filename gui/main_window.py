@@ -1,4 +1,3 @@
-# gui/main_window.py
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -9,11 +8,12 @@ from PySide6.QtWidgets import (
     QToolBar,
 )
 from PySide6.QtCore import Qt
+    # noqa
 from PySide6.QtGui import QAction, QIcon
 import os
 
 from import_excel import importar_excel
-from backup import hacer_respaldo
+from backup import hacer_respaldo, importar_respaldo
 from .clientes_dialog import ClientesDialog
 from .pedidos_dialog import PedidosDialog
 from .config_dialogs import change_backup_folder
@@ -46,7 +46,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("CRM Raíz Diseño")
         self.resize(1000, 600)
 
-        # ---- Contenido central simple (puedes reemplazarlo por lo que ya tienes) ----
+        # ---- Contenido central simple ----
         central = QWidget(self)
         layout = QVBoxLayout(central)
         label = QLabel("CRM Raíz Diseño\nSelecciona una opción en el menú.", central)
@@ -66,6 +66,10 @@ class MainWindow(QMainWindow):
         # ----- Menú Archivo -----
         self.act_importar_excel = QAction("Importar desde Excel", self)
         self.act_importar_excel.triggered.connect(self.action_importar_excel)
+
+        # NUEVO: importar respaldo .db
+        self.act_importar_backup = QAction("Importar respaldo (.db)", self)
+        self.act_importar_backup.triggered.connect(self.action_importar_backup)
 
         self.act_cambiar_carpeta = QAction("Cambiar carpeta de respaldo", self)
         self.act_cambiar_carpeta.triggered.connect(self.action_cambiar_carpeta)
@@ -99,6 +103,7 @@ class MainWindow(QMainWindow):
         # ---- Menú Archivo ----
         menu_archivo = menubar.addMenu("Archivo")
         menu_archivo.addAction(self.act_importar_excel)
+        menu_archivo.addAction(self.act_importar_backup)   # ← NUEVO
         menu_archivo.addAction(self.act_cambiar_carpeta)
         menu_archivo.addSeparator()
         menu_archivo.addAction(self.act_salir)
@@ -157,6 +162,36 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Importación", "Importación desde Excel completada.")
         except Exception as exc:
             QMessageBox.critical(self, "Error", f"Error al importar Excel:\n{exc}")
+
+    def action_importar_backup(self):
+        """Permite al usuario importar información desde un archivo .db de respaldo."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Seleccionar archivo de respaldo",
+            "",
+            "Base de datos SQLite (*.db);;Todos los archivos (*.*)",
+        )
+        if not path:
+            return
+
+        try:
+            resultado = importar_respaldo(path)
+            QMessageBox.information(
+                self,
+                "Importar respaldo",
+                (
+                    "Importación completada.\n\n"
+                    f"Clientes nuevos: {resultado['clientes_nuevos']}\n"
+                    f"Pedidos nuevos: {resultado['pedidos_nuevos']}\n"
+                    f"Ítems nuevos: {resultado['items_nuevos']}"
+                ),
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"No se pudo importar el respaldo:\n{exc}",
+            )
 
     def action_clientes(self):
         dlg = ClientesDialog(self)
